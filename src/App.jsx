@@ -1,4 +1,7 @@
 import React, { useState } from 'react'
+import Map from './components/Map'
+import { geocodeAddress } from './services/geocoding'
+import { getPropertyByCoordinates, calculateBuildableArea } from './services/plutoApi'
 
 function App() {
   // State management
@@ -6,6 +9,8 @@ function App() {
   const [isSearching, setIsSearching] = useState(false)
   const [hasSearched, setHasSearched] = useState(false)
   const [propertyData, setPropertyData] = useState(null)
+  const [coordinates, setCoordinates] = useState(null)
+  const [error, setError] = useState(null)
 
   // Handle search submission
   const handleSearch = async (e) => {
@@ -18,15 +23,42 @@ function App() {
 
     setIsSearching(true)
     setHasSearched(true)
+    setError(null)
+    setPropertyData(null)
+    setCoordinates(null)
 
-    // Simulate API call - will be implemented in Step 3
-    setTimeout(() => {
-      setIsSearching(false)
+    try {
+      // Step 1: Geocode the address
+      const geocodeResult = await geocodeAddress(address)
+
+      if (!geocodeResult.success) {
+        throw new Error(geocodeResult.error)
+      }
+
+      const { latitude, longitude, formattedAddress } = geocodeResult
+      setCoordinates([latitude, longitude])
+
+      // Step 2: Fetch PLUTO property data
+      const plutoResult = await getPropertyByCoordinates(latitude, longitude)
+
+      if (!plutoResult.success) {
+        throw new Error(plutoResult.error)
+      }
+
+      // Calculate buildable area
+      const buildableInfo = calculateBuildableArea(plutoResult.data)
+
       setPropertyData({
-        address: address,
-        placeholder: true
+        ...plutoResult.data,
+        geocodedAddress: formattedAddress,
+        buildableInfo,
       })
-    }, 1500)
+    } catch (err) {
+      console.error('Search error:', err)
+      setError(err.message || 'An error occurred while searching. Please try again.')
+    } finally {
+      setIsSearching(false)
+    }
   }
 
   // Clear search and reset
@@ -34,6 +66,14 @@ function App() {
     setAddress('')
     setHasSearched(false)
     setPropertyData(null)
+    setCoordinates(null)
+    setError(null)
+  }
+
+  // Format numbers with commas
+  const formatNumber = (num) => {
+    if (!num && num !== 0) return 'N/A'
+    return num.toLocaleString()
   }
 
   return (
@@ -140,10 +180,23 @@ function App() {
               Enter a complete NYC address including street number, street name, and borough/zip code for best results.
             </p>
           </div>
+
+          {/* Error Display */}
+          {error && (
+            <div className="mt-4 bg-red-50 border border-red-200 rounded-lg p-4 flex items-start gap-3">
+              <svg className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <div>
+                <p className="text-sm font-medium text-red-800">Error</p>
+                <p className="text-sm text-red-700 mt-1">{error}</p>
+              </div>
+            </div>
+          )}
         </section>
 
         {/* Results Section */}
-        {hasSearched && (
+        {hasSearched && !error && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
             {/* Map Section */}
             <section className="bg-white rounded-xl shadow-md p-6">
@@ -154,23 +207,17 @@ function App() {
                 Property Location
               </h3>
 
-              {/* Map Placeholder */}
-              <div className="map-container bg-gray-100 rounded-lg flex items-center justify-center border-2 border-dashed border-gray-300">
-                {isSearching ? (
+              {/* Map Display */}
+              {isSearching ? (
+                <div className="map-container bg-gray-100 rounded-lg flex items-center justify-center">
                   <div className="text-center">
                     <div className="spinner mx-auto mb-3"></div>
                     <p className="text-gray-600">Loading map...</p>
                   </div>
-                ) : (
-                  <div className="text-center p-8">
-                    <svg className="w-16 h-16 text-gray-400 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
-                    </svg>
-                    <p className="text-gray-600 font-medium">Interactive Map</p>
-                    <p className="text-sm text-gray-500 mt-1">Map will be integrated in Step 3</p>
-                  </div>
-                )}
-              </div>
+                </div>
+              ) : coordinates ? (
+                <Map center={coordinates} address={propertyData?.address || address} />
+              ) : null}
             </section>
 
             {/* Property Information Section */}
@@ -196,24 +243,52 @@ function App() {
                   <div className="pb-4 border-b border-gray-200">
                     <p className="text-sm text-gray-600 mb-1">Address</p>
                     <p className="text-lg font-medium text-gray-900">{propertyData.address}</p>
+                    <p className="text-xs text-gray-500 mt-1">{propertyData.borough}</p>
                   </div>
 
-                  {/* Basic Info Placeholder */}
+                  {/* Basic Info - Free Preview */}
                   <div className="space-y-3">
-                    <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
-                      <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">Zoning District</p>
-                      <p className="text-gray-600 italic">Data will be fetched in Step 3</p>
+                    <div className="bg-primary-50 rounded-lg p-4 border border-primary-200">
+                      <p className="text-xs text-primary-700 uppercase tracking-wide mb-1 font-semibold">Zoning District</p>
+                      <p className="text-2xl font-bold text-primary-900">{propertyData.zoning.district}</p>
+                      {propertyData.zoning.overlay1 && (
+                        <p className="text-sm text-primary-700 mt-1">Overlay: {propertyData.zoning.overlay1}</p>
+                      )}
                     </div>
 
                     <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
                       <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">Block & Lot</p>
-                      <p className="text-gray-600 italic">Data will be fetched in Step 3</p>
+                      <p className="text-lg font-semibold text-gray-900">
+                        Block {propertyData.block}, Lot {propertyData.lot}
+                      </p>
+                      <p className="text-xs text-gray-500 mt-1">BBL: {propertyData.bbl}</p>
                     </div>
 
                     <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
                       <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">Building Class</p>
-                      <p className="text-gray-600 italic">Data will be fetched in Step 3</p>
+                      <p className="text-lg font-semibold text-gray-900">{propertyData.building.class}</p>
                     </div>
+
+                    <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                      <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">Lot Area</p>
+                      <p className="text-lg font-semibold text-gray-900">
+                        {formatNumber(propertyData.lot.area)} sq ft
+                      </p>
+                    </div>
+
+                    {propertyData.building.area && (
+                      <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                        <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">Building Area</p>
+                        <p className="text-lg font-semibold text-gray-900">
+                          {formatNumber(propertyData.building.area)} sq ft
+                        </p>
+                        {propertyData.building.stories && (
+                          <p className="text-sm text-gray-600 mt-1">
+                            {propertyData.building.stories} {propertyData.building.stories === 1 ? 'story' : 'stories'}
+                          </p>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   {/* CTA for Full Report */}
@@ -225,9 +300,35 @@ function App() {
                         </svg>
                         Want the Full Report?
                       </h4>
-                      <p className="text-sm text-gray-700 mb-4">
-                        Get a comprehensive PDF report with zoning analysis, transit scores, development potential, and more.
+                      <p className="text-sm text-gray-700 mb-3">
+                        Get a comprehensive PDF report including:
                       </p>
+                      <ul className="text-xs text-gray-600 space-y-1 mb-4">
+                        <li className="flex items-start gap-2">
+                          <svg className="w-4 h-4 text-green-500 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                          </svg>
+                          <span>Complete FAR analysis & buildable area calculations</span>
+                        </li>
+                        <li className="flex items-start gap-2">
+                          <svg className="w-4 h-4 text-green-500 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                          </svg>
+                          <span>Transit access scores with nearby subway/bus lines</span>
+                        </li>
+                        <li className="flex items-start gap-2">
+                          <svg className="w-4 h-4 text-green-500 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                          </svg>
+                          <span>Flood zone designation & environmental factors</span>
+                        </li>
+                        <li className="flex items-start gap-2">
+                          <svg className="w-4 h-4 text-green-500 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                          </svg>
+                          <span>Links to relevant city planning & building code resources</span>
+                        </li>
+                      </ul>
                       <button
                         disabled
                         className="btn-primary w-full disabled:opacity-50 disabled:cursor-not-allowed"
