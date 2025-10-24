@@ -16,39 +16,123 @@ const PLUTO_API_URL = 'https://data.cityofnewyork.us/resource/64uk-42ks.json'
  */
 export async function getPropertyByCoordinates(latitude, longitude) {
   try {
-    // Use Socrata's within_circle function to find properties near the coordinates
-    // Search within 50 meters (approximately 164 feet)
+    // ROOT CAUSE FIX: The within_circle function may not work with all Socrata datasets
+    // or may have restrictions. Using a more robust bounding box approach instead.
+    //
+    // Create a small bounding box around the point (approximately 50 meters in each direction)
+    // At NYC's latitude (~40.7°), 1 degree latitude ≈ 111km, 1 degree longitude ≈ 85km
+    // So 50 meters ≈ 0.00045 degrees lat, 0.00059 degrees lon
+
+    const latDelta = 0.0005  // ~55 meters
+    const lonDelta = 0.0006  // ~50 meters
+
+    const minLat = latitude - latDelta
+    const maxLat = latitude + latDelta
+    const minLon = longitude - lonDelta
+    const maxLon = longitude + lonDelta
+
+    // Build a bounding box query that's more reliable
+    const whereClause = `latitude >= ${minLat} AND latitude <= ${maxLat} AND longitude >= ${minLon} AND longitude <= ${maxLon}`
+
     const params = new URLSearchParams({
-      $where: `within_circle(the_geom, ${latitude}, ${longitude}, 50)`,
-      $limit: '1',
-      $order: ':distance', // Order by distance from point
+      $where: whereClause,
+      $limit: '10', // Get multiple properties to find the closest
+      $order: 'bbl', // Order by BBL for consistency
     })
 
-    const response = await fetch(`${PLUTO_API_URL}?${params}`)
+    const url = `${PLUTO_API_URL}?${params.toString()}`
+    console.log('PLUTO API Request URL:', url) // Debug logging
 
+    const response = await fetch(url)
+
+    // Enhanced error handling with detailed diagnostics
     if (!response.ok) {
-      throw new Error(`PLUTO API error: ${response.statusText}`)
+      const errorText = await response.text()
+      console.error('PLUTO API HTTP Error:', {
+        status: response.status,
+        statusText: response.statusText,
+        body: errorText,
+        url: url,
+      })
+
+      // Try to parse Socrata error message
+      let detailedError = response.statusText
+      try {
+        const errorJson = JSON.parse(errorText)
+        if (errorJson.message) {
+          detailedError = errorJson.message
+        } else if (errorJson.error) {
+          detailedError = errorJson.error
+        }
+      } catch (e) {
+        detailedError = errorText || response.statusText
+      }
+
+      throw new Error(`PLUTO API error (${response.status}): ${detailedError}`)
     }
 
     const data = await response.json()
+    console.log('PLUTO API Response:', data.length, 'properties found') // Debug logging
 
     if (!data || data.length === 0) {
-      throw new Error('No property data found for this location. The address may not be in the PLUTO database.')
+      throw new Error('No property data found for this location. The address may not be in the PLUTO database, or the coordinates are outside NYC boundaries.')
     }
 
-    const property = data[0]
+    // Find the closest property by calculating distances
+    const propertiesWithDistance = data.map(prop => {
+      const propLat = parseFloat(prop.latitude)
+      const propLon = parseFloat(prop.longitude)
+      const distance = calculateDistanceMeters(latitude, longitude, propLat, propLon)
+      return { ...prop, distance }
+    })
+
+    // Sort by distance and take the closest
+    propertiesWithDistance.sort((a, b) => a.distance - b.distance)
+    const property = propertiesWithDistance[0]
+
+    console.log('Selected property BBL:', property.bbl, 'at distance:', property.distance.toFixed(1), 'meters') // Debug logging
+
     return {
       success: true,
       data: parsePropertyData(property),
       raw: property, // Keep raw data for debugging
     }
   } catch (error) {
-    console.error('PLUTO API error:', error)
+    console.error('PLUTO API error details:', error)
     return {
       success: false,
       error: error.message || 'Failed to fetch property data.',
+      details: {
+        latitude,
+        longitude,
+        timestamp: new Date().toISOString(),
+      }
     }
   }
+}
+
+/**
+ * Calculate distance between two points using Haversine formula
+ * @param {number} lat1 - First point latitude
+ * @param {number} lon1 - First point longitude
+ * @param {number} lat2 - Second point latitude
+ * @param {number} lon2 - Second point longitude
+ * @returns {number} - Distance in meters
+ */
+function calculateDistanceMeters(lat1, lon1, lat2, lon2) {
+  const R = 6371000 // Earth's radius in meters
+  const φ1 = (lat1 * Math.PI) / 180
+  const φ2 = (lat2 * Math.PI) / 180
+  const Δφ = ((lat2 - lat1) * Math.PI) / 180
+  const Δλ = ((lon2 - lon1) * Math.PI) / 180
+
+  const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
+            Math.cos(φ1) * Math.cos(φ2) *
+            Math.sin(Δλ / 2) * Math.sin(Δλ / 2)
+
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+
+  return R * c
 }
 
 /**
