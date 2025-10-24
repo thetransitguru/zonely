@@ -99,43 +99,202 @@ export async function enrichPropertyData(address, latitude = null, longitude = n
       ? getFloodInsuranceRecommendation(floodResult)
       : null
 
-    // Compile complete enriched data object
+    // Generate unique report ID
+    const now = new Date()
+    const reportId = `ZNY-${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}-${String(Math.floor(Math.random() * 1000000)).padStart(6, '0')}`
+
+    // Calculate lot dimensions (approximate from frontage/depth or estimate from area)
+    let lotDimensions = 'N/A'
+    if (propertyData.lot.frontage && propertyData.lot.depth) {
+      lotDimensions = `${Math.round(propertyData.lot.frontage)} x ${Math.round(propertyData.lot.depth)}`
+    } else if (propertyData.lot.area) {
+      // Approximate square lot
+      const sideLength = Math.sqrt(propertyData.lot.area)
+      lotDimensions = `~${Math.round(sideLength)} x ${Math.round(sideLength)} (approx)`
+    }
+
+    // Collect all zoning overlays
+    const zoningOverlays = [
+      propertyData.zoning.overlay1,
+      propertyData.zoning.overlay2,
+      propertyData.zoning.commercialOverlay,
+    ].filter(Boolean)
+
+    // Collect all special districts
+    const specialDistricts = [
+      propertyData.special.specialDistrict1,
+      propertyData.special.specialDistrict2,
+      propertyData.special.specialDistrict3,
+    ].filter(Boolean)
+
+    // Get E-designations (environmental designations)
+    const eDesignations = [] // TODO: Add E-designation detection from PLUTO data if available
+
+    // Collect unique transit lines from nearby stops
+    const transitLines = transitResult.success && transitResult.uniqueRoutes
+      ? transitResult.uniqueRoutes
+      : []
+
+    // Count transit stations within 10-minute walk (800m)
+    const stationsWithin10Min = transitResult.success && transitResult.nearbyStops
+      ? transitResult.nearbyStops.filter(stop => stop.walkingMinutes <= 10).length
+      : 0
+
+    // Get FEMA FIRM panel number from flood result details
+    const firmPanel = floodResult.success && floodResult.details?.firmPanel
+      ? floodResult.details.firmPanel
+      : 'N/A'
+
+    // Calculate confidence level for capacity data
+    const capacityConfidence = assessCapacityConfidence(propertyData, developmentAnalysis)
+
+    // Generate flags array (important notices and considerations)
+    const flags = generatePropertyFlags(propertyData, transitResult, floodResult, developmentAnalysis)
+
+    // Compile complete enriched data object (NEW BLUEPRINT FORMAT)
     const enrichedData = {
       success: true,
-      timestamp: new Date().toISOString(),
-      processingTime: Date.now() - startTime,
+
+      // Report metadata
+      report_id: reportId,
+      generated_at: now.toISOString(),
+      processing_time_ms: Date.now() - startTime,
 
       // Basic property information
+      address: propertyData.address,
+      borough: propertyData.borough,
+      block: propertyData.block,
+      lot: propertyData.lot,
+      bbl: propertyData.bbl,
+      coordinates: {
+        latitude: coords.latitude,
+        longitude: coords.longitude,
+      },
+
+      // Dataset versions
+      datasets: {
+        pluto_version: propertyData.version || '24v1',
+        mta_gtfs_date: '2025-01-15', // From our transit data generation
+        fema_firm_effective: floodResult.success && floodResult.details?.effectiveDate
+          ? floodResult.details.effectiveDate
+          : '2015-09-05',
+      },
+
+      // Lot information
+      lot_info: {
+        area_sqft: propertyData.lot.area || 0,
+        dimensions: lotDimensions,
+        corner_lot: propertyData.lot.corner || false,
+        irregular: propertyData.lot.irregular || false,
+        frontage_ft: propertyData.lot.frontage,
+        depth_ft: propertyData.lot.depth,
+      },
+
+      // Zoning snapshot (FREE PREVIEW)
+      zoning: {
+        district: propertyData.zoning.district || 'Not Zoned',
+        overlays: zoningOverlays,
+        special_districts: specialDistricts,
+        split_zone: propertyData.zoning.splitZone || false,
+      },
+
+      // Development capacity (PREMIUM)
+      capacity: {
+        base_far: propertyData.development.maxAllowedFAR || 0,
+        residential_far: propertyData.development.residentialFAR,
+        commercial_far: propertyData.development.commercialFAR,
+        existing_gfa_sqft: propertyData.building.area || 0,
+        max_gfa_sqft: developmentAnalysis.success ? developmentAnalysis.maxBuildable : 0,
+        unused_dev_rights_sqft: developmentAnalysis.success ? developmentAnalysis.remaining : 0,
+        utilization_pct: developmentAnalysis.success ? developmentAnalysis.utilized : 0,
+        confidence: capacityConfidence,
+      },
+
+      // Building information
+      building: {
+        class: propertyData.building.class,
+        stories: propertyData.building.stories,
+        year_built: propertyData.building.yearBuilt,
+        year_altered: propertyData.building.yearAltered1,
+        units_total: propertyData.building.units?.total || 0,
+        units_residential: propertyData.building.units?.residential || 0,
+      },
+
+      // Transit access (PREMIUM)
+      transit: {
+        score: transitResult.success ? transitResult.score : 0,
+        score_rating: transitResult.success ? transitResult.scoreRating : 'No Transit',
+        stations_within_10min: stationsWithin10Min,
+        total_stops_in_radius: transitResult.success ? transitResult.totalStopsInRadius : 0,
+        lines: transitLines,
+        summary: transitResult.success ? transitResult.summary : 'No nearby transit found',
+        nearest_stops: transitResult.success ? transitResult.nearbyStops.slice(0, 5) : [],
+      },
+
+      // Environmental & risk (PREMIUM)
+      environmental: {
+        flood_zone: floodResult.success ? floodResult.zone : 'Unknown',
+        flood_zone_description: floodResult.success ? floodResult.zoneDescription : 'Data unavailable',
+        in_sfha: floodResult.success ? floodResult.sfha : false,
+        risk_level: floodResult.success ? floodResult.riskLevel : 'Unknown',
+        firm_panel: firmPanel,
+        e_designations: eDesignations,
+        flood_insurance_required: floodInsurance?.required || false,
+        flood_insurance_note: floodInsurance?.recommendation || 'Contact insurance provider',
+      },
+
+      // Development opportunity analysis (PREMIUM)
+      opportunity: {
+        score: developmentAnalysis.success ? developmentAnalysis.opportunityScore : 0,
+        rating: developmentAnalysis.success
+          ? getOpportunityRating(developmentAnalysis.opportunityScore)
+          : 'N/A',
+        is_underdeveloped: developmentAnalysis.success ? developmentAnalysis.isUnderdeveloped : false,
+        estimated_construction_cost: developmentAnalysis.success
+          ? developmentAnalysis.estimatedConstructionCost
+          : 0,
+        construction_cost_per_sqft: developmentAnalysis.success
+          ? developmentAnalysis.constructionCostPerSqFt
+          : 0,
+        air_rights_value: airRightsValue.success ? airRightsValue.estimatedTotalValue : 0,
+        air_rights_per_sqft: airRightsValue.success ? airRightsValue.valuePerSqFt : 0,
+        recommendations: developmentAnalysis.success ? developmentAnalysis.recommendations : [],
+      },
+
+      // Land use
+      land_use: {
+        category: propertyData.landUse.category,
+        description: propertyData.landUse.description,
+        owner_type: propertyData.landUse.ownerType,
+      },
+
+      // Special designations
+      special_designations: {
+        historic_district: propertyData.special.historicDistrict,
+        landmark: propertyData.special.landmark,
+        special_districts: specialDistricts,
+      },
+
+      // Tax assessment
+      assessment: {
+        land_value: propertyData.development.assessedValue?.land || 0,
+        total_value: propertyData.development.assessedValue?.total || 0,
+        year: propertyData.development.assessedValue?.year || new Date().getFullYear(),
+      },
+
+      // Flags (important notices and red flags)
+      flags,
+
+      // Legacy format compatibility (for existing frontend code)
+      // Keep the old structure so App.jsx doesn't break
       property: {
         address: propertyData.address,
         borough: propertyData.borough,
         block: propertyData.block,
         lot: propertyData.lot,
         bbl: propertyData.bbl,
-        coordinates: {
-          latitude: coords.latitude,
-          longitude: coords.longitude,
-        },
+        coordinates: { latitude: coords.latitude, longitude: coords.longitude },
       },
-
-      // Zoning information (free preview data)
-      zoning: {
-        district: propertyData.zoning.district,
-        overlay1: propertyData.zoning.overlay1,
-        overlay2: propertyData.zoning.overlay2,
-        splitZone: propertyData.zoning.splitZone,
-        commercialOverlay: propertyData.zoning.commercialOverlay,
-      },
-
-      // Building & lot details
-      building: {
-        class: propertyData.building.class,
-        area: propertyData.building.area,
-        stories: propertyData.building.stories,
-        yearBuilt: propertyData.building.yearBuilt,
-        units: propertyData.building.units,
-      },
-
       lot: {
         area: propertyData.lot.area,
         frontage: propertyData.lot.frontage,
@@ -143,43 +302,6 @@ export async function enrichPropertyData(address, latitude = null, longitude = n
         corner: propertyData.lot.corner,
         irregular: propertyData.lot.irregular,
       },
-
-      // PREMIUM DATA: Transit access analysis
-      transit: transitResult.success
-        ? {
-            score: transitResult.score,
-            scoreRating: transitResult.scoreRating,
-            summary: transitResult.summary,
-            nearbyStops: transitResult.nearbyStops,
-            totalStopsInRadius: transitResult.totalStopsInRadius,
-            breakdown: transitResult.breakdown,
-            uniqueRoutes: transitResult.uniqueRoutes,
-            uniqueRouteCount: transitResult.uniqueRouteCount,
-          }
-        : {
-            error: transitResult.error,
-            available: false,
-          },
-
-      // PREMIUM DATA: Flood zone & environmental
-      environmental: {
-        floodZone: floodResult.success
-          ? {
-              zone: floodResult.zone,
-              zoneDescription: floodResult.zoneDescription,
-              inFloodZone: floodResult.inFloodZone,
-              sfha: floodResult.sfha,
-              riskLevel: floodResult.riskLevel,
-              details: floodResult.details,
-            }
-          : {
-              error: floodResult.error,
-              available: false,
-            },
-        floodInsurance: floodInsurance,
-      },
-
-      // PREMIUM DATA: Development potential analysis
       development: {
         far: {
           current: propertyData.development.far,
@@ -199,10 +321,7 @@ export async function enrichPropertyData(address, latitude = null, longitude = n
               estimatedConstructionCost: developmentAnalysis.estimatedConstructionCost,
               constructionCostPerSqFt: developmentAnalysis.constructionCostPerSqFt,
             }
-          : {
-              available: false,
-              reason: developmentAnalysis.reason,
-            },
+          : { available: false, reason: developmentAnalysis.reason },
         opportunity: developmentAnalysis.success
           ? {
               score: developmentAnalysis.opportunityScore,
@@ -220,30 +339,7 @@ export async function enrichPropertyData(address, latitude = null, longitude = n
           : null,
       },
 
-      // Land use and special designations
-      landUse: {
-        category: propertyData.landUse.category,
-        description: propertyData.landUse.description,
-        ownerType: propertyData.landUse.ownerType,
-      },
-
-      special: {
-        historicDistrict: propertyData.special.historicDistrict,
-        landmark: propertyData.special.landmark,
-        specialDistricts: [
-          propertyData.special.specialDistrict1,
-          propertyData.special.specialDistrict2,
-          propertyData.special.specialDistrict3,
-        ].filter(Boolean),
-      },
-
-      // Tax assessment data
-      assessment: {
-        landValue: propertyData.development.assessedValue?.land,
-        totalValue: propertyData.development.assessedValue?.total,
-      },
-
-      // Metadata about this enrichment
+      // Metadata
       _metadata: {
         enrichmentSteps,
         dataQuality: assessDataQuality(propertyData, transitResult, floodResult, developmentAnalysis),
@@ -266,6 +362,133 @@ export async function enrichPropertyData(address, latitude = null, longitude = n
       enrichmentSteps,
     }
   }
+}
+
+/**
+ * Assess confidence level for capacity calculations
+ * @param {Object} propertyData - PLUTO property data
+ * @param {Object} developmentAnalysis - Development analysis result
+ * @returns {string} Confidence level: 'high', 'medium', 'low'
+ */
+function assessCapacityConfidence(propertyData, developmentAnalysis) {
+  if (!developmentAnalysis.success) return 'low'
+
+  const checks = {
+    hasFAR: !!propertyData.development?.maxAllowedFAR,
+    hasLotArea: !!propertyData.lot?.area,
+    hasBuildingArea: !!propertyData.building?.area,
+    hasZoning: !!propertyData.zoning?.district,
+    noSplitZone: !propertyData.zoning?.splitZone,
+  }
+
+  const passedChecks = Object.values(checks).filter(Boolean).length
+
+  if (passedChecks >= 4) return 'high'
+  if (passedChecks >= 3) return 'medium'
+  return 'low'
+}
+
+/**
+ * Generate property flags (important notices and red flags)
+ * @param {Object} propertyData - PLUTO property data
+ * @param {Object} transitResult - Transit analysis result
+ * @param {Object} floodResult - Flood zone result
+ * @param {Object} developmentAnalysis - Development analysis result
+ * @returns {Array<string>} Array of flag messages
+ */
+function generatePropertyFlags(propertyData, transitResult, floodResult, developmentAnalysis) {
+  const flags = []
+
+  // Zoning flags
+  if (propertyData.zoning?.commercialOverlay || propertyData.zoning?.overlay1 || propertyData.zoning?.overlay2) {
+    flags.push('Commercial overlay present — mixed-use development may be permitted')
+  }
+
+  if (propertyData.zoning?.splitZone) {
+    flags.push('Split zoning — different regulations apply to different portions of the lot')
+  }
+
+  // Lot flags
+  if (propertyData.lot?.irregular) {
+    flags.push('Irregular lot shape — survey recommended before development planning')
+  }
+
+  if (propertyData.lot?.corner) {
+    flags.push('Corner lot — may have zoning advantages (e.g., reduced setbacks)')
+  }
+
+  // Special designation flags
+  if (propertyData.special?.landmark) {
+    flags.push(`Landmark designation: ${propertyData.special.landmark} — strict alteration restrictions`)
+  }
+
+  if (propertyData.special?.historicDistrict) {
+    flags.push(`Historic district: ${propertyData.special.historicDistrict} — LPC approval required for changes`)
+  }
+
+  const specialDistricts = [
+    propertyData.special?.specialDistrict1,
+    propertyData.special?.specialDistrict2,
+    propertyData.special?.specialDistrict3,
+  ].filter(Boolean)
+
+  if (specialDistricts.length > 0) {
+    flags.push(`Special zoning district: ${specialDistricts.join(', ')} — additional regulations apply`)
+  }
+
+  // Flood zone flags
+  if (floodResult.success && floodResult.inFloodZone) {
+    flags.push(`Flood Zone ${floodResult.zone} — flood insurance required, construction restrictions apply`)
+  }
+
+  if (floodResult.success && floodResult.sfha) {
+    flags.push('Located in Special Flood Hazard Area (SFHA) — high flood risk')
+  }
+
+  // Development potential flags
+  if (developmentAnalysis.success) {
+    if (developmentAnalysis.isUnderdeveloped && developmentAnalysis.remaining > 1000) {
+      flags.push(`${developmentAnalysis.remaining.toLocaleString()} sq ft unused development rights — significant expansion potential`)
+    }
+
+    if (developmentAnalysis.utilized > 100) {
+      flags.push('Over-built property — exceeds current FAR limits (likely grandfathered)')
+    }
+
+    if (developmentAnalysis.utilized > 95 && developmentAnalysis.utilized <= 100) {
+      flags.push('Nearly fully developed — minimal additional buildable area')
+    }
+  }
+
+  // Transit flags
+  if (transitResult.success) {
+    if (transitResult.score >= 80) {
+      flags.push(`Excellent transit access (${transitResult.score}/100) — ${transitResult.totalStopsInRadius} stops nearby`)
+    } else if (transitResult.score < 30) {
+      flags.push(`Limited transit access (${transitResult.score}/100) — transportation challenges`)
+    }
+  }
+
+  // Building age flags
+  if (propertyData.building?.yearBuilt && propertyData.building.yearBuilt < 1950) {
+    flags.push(`Pre-1950 construction (${propertyData.building.yearBuilt}) — may contain lead paint or asbestos`)
+  }
+
+  // Data quality flags
+  if (!propertyData.development?.maxAllowedFAR) {
+    flags.push('FAR data unavailable — development calculations may be incomplete')
+  }
+
+  if (!propertyData.lot?.area) {
+    flags.push('Lot area data missing — cannot calculate buildable area')
+  }
+
+  // Default flag if no issues found
+  if (flags.length === 0) {
+    flags.push('No major red flags identified — standard due diligence recommended')
+  }
+
+  return flags
 }
 
 /**
