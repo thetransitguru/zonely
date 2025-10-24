@@ -57,21 +57,28 @@ npm run dev
 zonely/
 ├── src/
 │   ├── components/     # React components
+│   │   └── Map.jsx     # Leaflet map component
+│   ├── services/       # API and data services
+│   │   ├── geocoding.js    # Address geocoding service
+│   │   └── plutoApi.js     # NYC PLUTO data fetching
 │   ├── App.jsx         # Main application component
 │   ├── main.jsx        # Application entry point
 │   └── index.css       # Global styles with Tailwind
-├── public/             # Static assets
 ├── api/                # Serverless functions
+│   ├── generate-pdf.js # PDF report generation
+│   └── README.md       # API documentation
+├── public/             # Static assets
+├── vercel.json         # Vercel deployment configuration
 └── index.html          # HTML template
 ```
 
 ## Development Roadmap
 
 - [x] Step 1: Project setup with React, Vite, Tailwind CSS
-- [ ] Step 2: Build frontend interface
-- [ ] Step 3: Integrate map and data fetching
-- [ ] Step 4: Display basic results
-- [ ] Step 5: Build PDF report backend
+- [x] Step 2: Build frontend interface
+- [x] Step 3: Integrate map and data fetching
+- [x] Step 4: Display basic results (integrated with Step 3)
+- [x] Step 5: Build PDF report backend
 - [ ] Step 6: Integrate Stripe payments
 
 ## License
